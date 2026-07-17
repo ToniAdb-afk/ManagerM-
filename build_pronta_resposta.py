@@ -1,159 +1,280 @@
-import pandas as pd
-import numpy as np
-import datetime as dt
+# -*- coding: utf-8 -*-
+"""
+build_pronta_resposta.py
+-------------------------------------------------------------------
+Le a planilha 'Pronta Resposta' (aba unica) e gera o dashboard
+'pronta_resposta.html', recalculando tudo (KPIs, graficos, tabela).
+
+Uso:
+    python3 build_pronta_resposta.py caminho/para/Pronta_Resposta.xlsx
+"""
+
+import sys
 import json
 import re
-import sys
-import os
+from datetime import datetime, time as dtime
+import pandas as pd
 
-SRC = os.path.join(os.path.dirname(__file__), "manager_data", "Pronta Resposta.xlsx")
-TEMPLATE = os.path.join(os.path.dirname(__file__), "pronta_resposta_template.html")
-OUT = os.path.join(os.path.dirname(__file__), "pronta_resposta.html")
+MESES_ABREV = {1: "Jan", 2: "Fev", 3: "Mar", 4: "Abr", 5: "Mai", 6: "Jun",
+               7: "Jul", 8: "Ago", 9: "Set", 10: "Out", 11: "Nov", 12: "Dez"}
 
-MESES_PT = {1:'Jan',2:'Fev',3:'Mar',4:'Abr',5:'Mai',6:'Jun',7:'Jul',8:'Ago',9:'Set',10:'Out',11:'Nov',12:'Dez'}
 
-def to_minutes(v):
-    if pd.isna(v):
-        return None
-    if isinstance(v, dt.timedelta):
-        return v.total_seconds()/60
-    if isinstance(v, dt.time):
-        return v.hour*60 + v.minute + v.second/60
-    if isinstance(v, dt.datetime):
-        return v.hour*60 + v.minute + v.second/60
-    return None
-
-def time_str(v):
-    if pd.isna(v):
-        return None
-    if isinstance(v, dt.timedelta):
-        total = int(v.total_seconds())
-        h = (total // 3600) % 24
-        m = (total % 3600) // 60
-        return f"{h:02d}:{m:02d}"
-    if isinstance(v, (dt.time, dt.datetime)):
-        return f"{v.hour:02d}:{v.minute:02d}"
-    return None
-
-def load():
-    df = pd.read_excel(SRC, sheet_name='Sheet1', header=1)
-    df['Tipo Serviço'] = df['Tipo Serviço'].astype(str).str.strip()
-    df['Empresa'] = df['Empresa'].replace({'Seegsing': 'Segsing'})
-    df['Data Acionamento'] = pd.to_datetime(df['Data Acionamento'])
-    df['tempo_min'] = df['Tempo p/ Chegar'].apply(to_minutes)
-    df['hora_acionamento'] = df['Acionamento'].apply(time_str)
-    df['mes_key'] = df['Data Acionamento'].dt.to_period('M').astype(str)
+def carregar(caminho):
+    xls = pd.ExcelFile(caminho)
+    # Procura a aba que realmente tem os dados (contem a coluna 'AP'),
+    # em vez de assumir que e sempre a primeira - planilhas podem ganhar
+    # abas extras (resumos, rascunhos) na frente ao longo do tempo.
+    aba_certa = None
+    for nome in xls.sheet_names:
+        cabecalho = pd.read_excel(xls, sheet_name=nome, nrows=0).columns
+        cabecalho = [str(c).strip() for c in cabecalho]
+        if "AP" in cabecalho and "Motivo" in cabecalho:
+            aba_certa = nome
+            break
+    if aba_certa is None:
+        raise RuntimeError(
+            f"Nao encontrei uma aba com as colunas esperadas (AP, Motivo). "
+            f"Abas disponiveis: {xls.sheet_names}"
+        )
+    df = pd.read_excel(xls, sheet_name=aba_certa)
+    df.columns = [c.strip() for c in df.columns]
+    print(f"  (lendo aba '{aba_certa}' de {len(xls.sheet_names)} aba(s): {xls.sheet_names})")
     return df
 
-def build_data(df):
-    total = len(df)
-    postos = int(df['AP'].nunique())
-    cidades = int(df['CIDADE'].nunique())
 
-    sla_counts = df['SLA'].value_counts(dropna=True)
-    dentro = int(sla_counts.get('DENTRO DO SLA', 0))
-    fora = int(sla_counts.get('FORA DO SLA', 0))
-    sla_pct = round(100 * dentro / (dentro + fora), 1) if (dentro + fora) > 0 else None
+def normalizar_texto(v):
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if s.lower() in ("nan", "-", ""):
+        return ""
+    return s
 
-    tempo_mediano = df['tempo_min'].median()
-    tempo_medio = df['tempo_min'].mean()
 
-    data_min = df['Data Acionamento'].min().strftime('%Y-%m-%d')
-    data_max = df['Data Acionamento'].max().strftime('%Y-%m-%d')
+def para_time(v):
+    """Aceita datetime.time, datetime.datetime ou string 'HH:MM:SS' e retorna datetime.time."""
+    if v is None:
+        return None
+    if isinstance(v, dtime):
+        return v
+    if isinstance(v, datetime):
+        return v.time()
+    s = str(v).strip()
+    if not s or s == "-" or s.lower() == "nan":
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(s, fmt).time()
+        except Exception:
+            continue
+    return None
 
-    # Volume mensal
-    vol = df.groupby('mes_key').size().sort_index()
-    meses_labels = []
-    for k in vol.index:
-        ano, mes = k.split('-')
-        meses_labels.append(f"{MESES_PT[int(mes)]}/{ano[2:]}")
-    vol_valores = [int(x) for x in vol.values]
+
+def minutos_entre(inicio, fim):
+    """Diferenca em minutos entre dois horarios (time), assumindo que 'fim' pode
+    cair no dia seguinte se for menor que 'inicio' (cruzou a meia-noite)."""
+    if inicio is None or fim is None:
+        return None
+    ini_seg = inicio.hour * 3600 + inicio.minute * 60 + inicio.second
+    fim_seg = fim.hour * 3600 + fim.minute * 60 + fim.second
+    delta = fim_seg - ini_seg
+    if delta < 0:
+        delta += 24 * 3600
+    return round(delta / 60, 1)
+
+
+def montar_registros(df):
+    registros = []
+    for _, row in df.iterrows():
+        ap = str(row.get("AP", "")).strip()
+        try:
+            ap = str(int(float(ap)))
+        except Exception:
+            pass
+
+        cidade = normalizar_texto(row.get("CIDADE"))
+        uf = normalizar_texto(row.get("UF"))
+        tipo = normalizar_texto(row.get("Tipo Serviço"))
+        empresa = normalizar_texto(row.get("Empresa")) or "N/D"
+        descricao = normalizar_texto(row.get("Descrição"))
+        motivo = normalizar_texto(row.get("Motivo"))
+        solicitante = normalizar_texto(row.get("SOLICITANTE"))
+        loja = normalizar_texto(row.get("Loja"))
+        cnpj = normalizar_texto(row.get("CNPJ"))
+
+        dt_acionamento = row.get("Data Acionamento")
+        if isinstance(dt_acionamento, datetime):
+            data_iso = dt_acionamento.strftime("%Y-%m-%d")
+            data_br = dt_acionamento.strftime("%d/%m/%Y")
+        else:
+            data_iso, data_br = None, normalizar_texto(dt_acionamento) or "Não informada"
+
+        hora_acionamento = para_time(row.get("Acionamento"))
+        hora_chegada = para_time(row.get("Hora Chegada (Preservação)"))
+        tempo_min = minutos_entre(hora_acionamento, hora_chegada)
+
+        sla = normalizar_texto(row.get("SLA")) or "-"
+
+        registros.append({
+            "ap": ap,
+            "loja": loja,
+            "cnpj": cnpj,
+            "cidade": cidade,
+            "uf": uf,
+            "tipo": tipo,
+            "descricao": descricao,
+            "motivo": motivo,
+            "solicitante": solicitante,
+            "empresa": empresa,
+            "data": data_br,
+            "data_iso": data_iso,
+            "hora": hora_acionamento.strftime("%H:%M") if hora_acionamento else "-",
+            "tempo_min": tempo_min,
+            "sla": sla,
+        })
+    return registros
+
+
+def mediana(lst):
+    if not lst:
+        return None
+    s = sorted(lst)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def montar_kpis_e_agregados(registros):
+    total = len(registros)
+    postos = len({r["ap"] for r in registros if r["ap"]})
+    cidades = len({r["cidade"] for r in registros if r["cidade"]})
+
+    com_sla = [r for r in registros if r["sla"] in ("DENTRO DO SLA", "FORA DO SLA")]
+    dentro = sum(1 for r in com_sla if r["sla"] == "DENTRO DO SLA")
+    fora = sum(1 for r in com_sla if r["sla"] == "FORA DO SLA")
+    sla_pct = round(100 * dentro / len(com_sla), 1) if com_sla else None
+
+    tempos = [r["tempo_min"] for r in registros if r["tempo_min"] is not None]
+    tempo_mediano = mediana(tempos)
+    tempo_medio = round(sum(tempos) / len(tempos), 1) if tempos else None
+
+    datas_validas = sorted({r["data_iso"] for r in registros if r["data_iso"]})
+    data_min = datas_validas[0] if datas_validas else None
+    data_max = datas_validas[-1] if datas_validas else None
+
+    # volume mensal
+    cont_mes = {}
+    for r in registros:
+        if r["data_iso"]:
+            chave = r["data_iso"][:7]  # YYYY-MM
+            cont_mes[chave] = cont_mes.get(chave, 0) + 1
+    meses_ordenados = sorted(cont_mes.keys())
+    labels_mes = []
+    for m in meses_ordenados:
+        ano, mes = m.split("-")
+        labels_mes.append(f"{MESES_ABREV[int(mes)]}/{ano[2:]}")
+    valores_mes = [cont_mes[m] for m in meses_ordenados]
 
     queda_pct = None
-    if len(vol_valores) >= 2 and vol_valores[0] > 0:
-        queda_pct = round(100 * (vol_valores[0] - vol_valores[-1]) / vol_valores[0], 1)
+    if len(valores_mes) >= 2 and valores_mes[0] > 0:
+        queda_pct = round(100 * (valores_mes[0] - valores_mes[-1]) / valores_mes[0], 1)
 
-    # Top cidades
-    top_cidades = df['CIDADE'].value_counts().head(10)
-    top_cidades_labels = top_cidades.index.tolist()
-    top_cidades_valores = [int(x) for x in top_cidades.values]
+    # top cidades
+    cont_cidade = {}
+    for r in registros:
+        if r["cidade"]:
+            cont_cidade[r["cidade"]] = cont_cidade.get(r["cidade"], 0) + 1
+    top_cidades = sorted(cont_cidade.items(), key=lambda x: -x[1])[:10]
 
-    # Tipo de servico
-    tipo_counts = df['Tipo Serviço'].value_counts()
-    tipo_labels = tipo_counts.index.tolist()
-    tipo_valores = [int(x) for x in tipo_counts.values]
+    # tipo de servico
+    cont_tipo = {}
+    for r in registros:
+        t = r["tipo"] or "N/D"
+        cont_tipo[t] = cont_tipo.get(t, 0) + 1
+    tipo_ordenado = sorted(cont_tipo.items(), key=lambda x: -x[1])
 
-    # Motivo (top 8)
-    motivo_counts = df['Motivo'].value_counts().head(8)
-    motivo_labels = motivo_counts.index.tolist()
-    motivo_valores = [int(x) for x in motivo_counts.values]
+    # motivo (top 8)
+    cont_motivo = {}
+    for r in registros:
+        m = r["motivo"] or "N/D"
+        cont_motivo[m] = cont_motivo.get(m, 0) + 1
+    top_motivo = sorted(cont_motivo.items(), key=lambda x: -x[1])[:8]
 
-    # Empresa prestadora
-    empresa_counts = df['Empresa'].value_counts(dropna=True)
-    empresa_labels = empresa_counts.index.tolist()
-    empresa_valores = [int(x) for x in empresa_counts.values]
+    # empresa
+    cont_empresa = {}
+    for r in registros:
+        e = r["empresa"] or "N/D"
+        cont_empresa[e] = cont_empresa.get(e, 0) + 1
+    top_empresa = sorted(cont_empresa.items(), key=lambda x: -x[1])
 
-    # Solicitante
-    solic_counts = df['SOLICITANTE'].value_counts()
-    solic_labels = solic_counts.index.tolist()
-    solic_valores = [int(x) for x in solic_counts.values]
+    # solicitante
+    cont_solicitante = {}
+    for r in registros:
+        s = r["solicitante"] or "N/D"
+        cont_solicitante[s] = cont_solicitante.get(s, 0) + 1
+    top_solicitante = sorted(cont_solicitante.items(), key=lambda x: -x[1])[:3]
 
-    # Tabela detalhada
-    registros = []
-    for _, r in df.iterrows():
-        registros.append({
-            'ap': str(r['AP']),
-            'cidade': r['CIDADE'],
-            'uf': r['UF'],
-            'tipo': r['Tipo Serviço'],
-            'descricao': r['Descrição'],
-            'motivo': r['Motivo'],
-            'solicitante': r['SOLICITANTE'],
-            'empresa': r['Empresa'] if pd.notna(r['Empresa']) else '-',
-            'data': r['Data Acionamento'].strftime('%d/%m/%Y'),
-            'data_iso': r['Data Acionamento'].strftime('%Y-%m-%d'),
-            'hora': r['hora_acionamento'] or '-',
-            'tempo_min': None if pd.isna(r['tempo_min']) else round(r['tempo_min'], 1),
-            'sla': r['SLA'] if pd.notna(r['SLA']) else '-',
-        })
-
-    return {
-        'kpi': {
-            'total': total,
-            'postos': postos,
-            'cidades': cidades,
-            'sla_pct': sla_pct,
-            'dentro': dentro,
-            'fora': fora,
-            'tempo_mediano': None if pd.isna(tempo_mediano) else round(tempo_mediano, 0),
-            'tempo_medio': None if pd.isna(tempo_medio) else round(tempo_medio, 0),
-            'queda_pct': queda_pct,
-            'data_min': data_min,
-            'data_max': data_max,
-        },
-        'volume_mensal': {'labels': meses_labels, 'valores': vol_valores},
-        'top_cidades': {'labels': top_cidades_labels, 'valores': top_cidades_valores},
-        'tipo_servico': {'labels': tipo_labels, 'valores': tipo_valores},
-        'motivo': {'labels': motivo_labels, 'valores': motivo_valores},
-        'empresa': {'labels': empresa_labels, 'valores': empresa_valores},
-        'solicitante': {'labels': solic_labels, 'valores': solic_valores},
-        'registros': registros,
-        'gerado_em': dt.datetime.now().strftime('%d/%m/%Y %H:%M'),
+    kpi = {
+        "total": total,
+        "postos": postos,
+        "cidades": cidades,
+        "sla_pct": sla_pct,
+        "dentro": dentro,
+        "fora": fora,
+        "tempo_mediano": tempo_mediano,
+        "tempo_medio": tempo_medio,
+        "queda_pct": queda_pct,
+        "data_min": data_min,
+        "data_max": data_max,
     }
 
-def main():
-    df = load()
-    data = build_data(df)
-    with open(TEMPLATE, 'r', encoding='utf-8') as f:
-        template = f.read()
-    payload = json.dumps(data, ensure_ascii=False)
-    html = template.replace('__DASHBOARD_DATA__', payload)
-    with open(OUT, 'w', encoding='utf-8') as f:
-        f.write(html)
-    print(f"OK -> {OUT}")
-    print(f"Total de registros: {data['kpi']['total']}")
-    print(f"SLA: {data['kpi']['sla_pct']}%")
-    print(f"Queda de acionamentos (primeiro -> ultimo mes): {data['kpi']['queda_pct']}%")
+    dados = {
+        "kpi": kpi,
+        "volume_mensal": {"labels": labels_mes, "valores": valores_mes},
+        "top_cidades": {"labels": [c for c, _ in top_cidades], "valores": [v for _, v in top_cidades]},
+        "tipo_servico": {"labels": [t for t, _ in tipo_ordenado], "valores": [v for _, v in tipo_ordenado]},
+        "motivo": {"labels": [m for m, _ in top_motivo], "valores": [v for _, v in top_motivo]},
+        "empresa": {"labels": [e for e, _ in top_empresa], "valores": [v for _, v in top_empresa]},
+        "solicitante": {"labels": [s for s, _ in top_solicitante], "valores": [v for _, v in top_solicitante]},
+        "registros": registros,
+    }
+    return dados
 
-if __name__ == '__main__':
+
+def gerar_html(dados, template_path, saida_path):
+    with open(template_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    dados_json = json.dumps(dados, ensure_ascii=False)
+
+    # Substitui o conteudo do <script id="dashboard-data" type="application/json">...</script>
+    padrao = re.compile(
+        r'(<script id="dashboard-data" type="application/json">).*?(</script>)',
+        re.S
+    )
+    html_novo, n = padrao.subn(lambda m: m.group(1) + dados_json + m.group(2), html)
+    if n != 1:
+        raise RuntimeError(f"Esperava substituir 1 bloco de dados, substitui {n}. Verifique o template.")
+
+    with open(saida_path, "w", encoding="utf-8") as f:
+        f.write(html_novo)
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Uso: python3 build_pronta_resposta.py caminho/para/Pronta_Resposta.xlsx [template.html]")
+        sys.exit(1)
+
+    caminho_xlsx = sys.argv[1]
+    template_path = sys.argv[2] if len(sys.argv) > 2 else "pronta_resposta_template.html"
+
+    df = carregar(caminho_xlsx)
+    registros = montar_registros(df)
+    dados = montar_kpis_e_agregados(registros)
+
+    gerar_html(dados, template_path, "pronta_resposta.html")
+    print(f"Dashboard gerado: pronta_resposta.html ({dados['kpi']['total']} registros)")
+    print(f"KPIs: {json.dumps(dados['kpi'], ensure_ascii=False, indent=2)}")
+
+
+if __name__ == "__main__":
     main()
