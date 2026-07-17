@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ocorrências · Manager+</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Inter',-apple-system,sans-serif; background:#080b10; color:#e8edf5; min-height:100vh; }
+  a.back { color:#7a8ba8; text-decoration:none; font-size:12px; }
+  a.back:hover { color:#3498db; }
+  header { background:#0e1420; border-bottom:1px solid #1e2d4a; padding:18px 28px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+  header h1 { font-size:18px; font-weight:800; }
+  header h1 span { color:#3498db; }
+  main { padding:24px 28px 60px; max-width:1500px; margin:0 auto; }
+
+  .kpis { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:14px; margin-bottom:22px; }
+  .kpi { background:#0e1420; border:1px solid #1e2d4a; border-radius:14px; padding:16px 18px; }
+  .kpi .label { font-size:11px; color:#7a8ba8; text-transform:uppercase; letter-spacing:.5px; margin-bottom:6px; }
+  .kpi .value { font-size:24px; font-weight:800; color:#3498db; }
+  .kpi .value.small { font-size:16px; }
+
+  .filters { background:#0e1420; border:1px solid #1e2d4a; border-radius:14px; padding:16px 18px; margin-bottom:22px; display:flex; gap:12px; flex-wrap:wrap; align-items:end; }
+  .filters .fg { display:flex; flex-direction:column; gap:5px; }
+  .filters label { font-size:10px; color:#7a8ba8; text-transform:uppercase; letter-spacing:.5px; }
+  .filters select, .filters input { background:#080b10; border:1px solid #1e2d4a; color:#e8edf5; border-radius:8px; padding:8px 10px; font-size:12px; min-width:130px; }
+  .filters input[type=text] { min-width:220px; }
+  .filters button { background:#3498db; border:none; color:#06182b; font-weight:700; padding:9px 16px; border-radius:8px; font-size:12px; cursor:pointer; }
+  .filters button.secondary { background:transparent; border:1px solid #1e2d4a; color:#e8edf5; }
+  .active-filter { display:inline-flex; align-items:center; gap:6px; background:rgba(52,152,219,.12); border:1px solid rgba(52,152,219,.35); color:#3498db; font-size:11px; padding:4px 10px; border-radius:20px; margin:2px 4px 2px 0; cursor:pointer; }
+
+  .charts { display:grid; grid-template-columns:1.2fr 1fr; gap:16px; margin-bottom:22px; }
+  .chart-card { background:#0e1420; border:1px solid #1e2d4a; border-radius:14px; padding:18px; }
+  .chart-card h3 { font-size:13px; font-weight:700; margin-bottom:12px; color:#e8edf5; }
+  .chart-card .hint { font-size:10px; color:#4a5f7a; margin-top:8px; }
+  .chart-wrap { position:relative; height:260px; }
+
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  thead th { text-align:left; padding:10px 12px; color:#7a8ba8; font-size:10px; text-transform:uppercase; letter-spacing:.5px; border-bottom:1px solid #1e2d4a; cursor:pointer; user-select:none; white-space:nowrap; }
+  thead th:hover { color:#3498db; }
+  tbody td { padding:9px 12px; border-bottom:1px solid #131b28; vertical-align:top; }
+  tbody tr:hover { background:#0e1420; }
+  .table-card { background:#0e1420; border:1px solid #1e2d4a; border-radius:14px; padding:18px; overflow-x:auto; }
+  .table-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; flex-wrap:wrap; gap:10px; }
+  .table-top .count { font-size:12px; color:#7a8ba8; }
+  .tipo-pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:700; background:rgba(52,152,219,.15); color:#3498db; white-space:nowrap; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <a class="back" href="manager-plus-index.html">&larr; Voltar ao Hub</a>
+    <h1 style="margin-top:4px;">📝 <span>Ocorrências</span></h1>
+  </div>
+  <div style="font-size:11px;color:#4a5f7a;">Gerado em 16/07/2026 20:26 · 36 registros</div>
+</header>
+
+<main>
+  <div class="kpis">
+    <div class="kpi"><div class="label">Total de Ocorrências</div><div class="value" id="kpi-total">-</div></div>
+    <div class="kpi"><div class="label">Unidades Distintas (PA)</div><div class="value" id="kpi-unidades">-</div></div>
+    <div class="kpi"><div class="label">Meses Cobertos</div><div class="value" id="kpi-meses">-</div></div>
+    <div class="kpi"><div class="label">Tipo Mais Frequente</div><div class="value small" id="kpi-tipo">-</div></div>
+    <div class="kpi"><div class="label">% Com Data Informada</div><div class="value" id="kpi-pctdata">-</div></div>
+  </div>
+
+  <div class="filters">
+    <div class="fg"><label>Mês</label><select id="f-mes"><option value="">Todos</option></select></div>
+    <div class="fg"><label>Tipo</label><select id="f-tipo"><option value="">Todos</option></select></div>
+    <div class="fg"><label>Buscar (PA / local / ocorrência)</label><input type="text" id="f-busca" placeholder="ex: cliente retido, Maceió, 413..."></div>
+    <div class="fg"><button onclick="limparFiltros()" class="secondary">Limpar filtros</button></div>
+    <div class="fg"><button onclick="exportarCSV()">Exportar CSV</button></div>
+  </div>
+  <div id="filtros-ativos" style="margin:-10px 0 18px;"></div>
+
+  <div class="charts">
+    <div class="chart-card">
+      <h3>Ocorrências por Mês</h3>
+      <div class="chart-wrap"><canvas id="chart-mes"></canvas></div>
+      <div class="hint">Clique numa barra para filtrar por mês</div>
+    </div>
+    <div class="chart-card">
+      <h3>Por Tipo</h3>
+      <div class="chart-wrap"><canvas id="chart-tipo"></canvas></div>
+      <div class="hint">Clique numa barra para filtrar por tipo</div>
+    </div>
+  </div>
+
+  <div class="table-card">
+    <div class="table-top">
+      <div class="count"><span id="count-mostrando">0</span> de <span id="count-total">0</span> registros</div>
+    </div>
+    <div style="overflow-x:auto;">
+    <table>
+      <thead>
+        <tr>
+          <th data-col="n">Nº</th>
+          <th data-col="data">Data</th>
+          <th data-col="mes">Mês</th>
+          <th data-col="pa">PA</th>
+          <th data-col="local">Local</th>
+          <th data-col="ocorrencia">Ocorrência</th>
+          <th data-col="tipo">Tipo</th>
+          <th data-col="acao">Observação / Ação</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    </div>
+  </div>
+</main>
+
+<script>
+const REGISTROS = [{"n": 1, "data": "2026-02-05", "data_raw": "05/02/2026", "mes": "Fevereiro", "pa": "316", "local": "Lavras", "ocorrencia": "Queda de porta de aço sobre objeto (cadeira).", "tipo": "Dano / Falha operacional", "acao": "Objeto identificado no local; medidas preventivas a serem reforçadas."}, {"n": 2, "data": "2026-02-08", "data_raw": "08/02/2026", "mes": "Fevereiro", "pa": "670", "local": "Rua Bicudo Leme", "ocorrencia": "Tentativa de intrusão mediante arrombamento de terminais.", "tipo": "Tentativa de intrusão", "acao": "Identificação realizada pela central de monitoramento, com a devida execução dos protocolos estabelecidos."}, {"n": 3, "data": "2026-02-09", "data_raw": "09/02/2026", "mes": "Fevereiro", "pa": "851", "local": "Londrina", "ocorrencia": "Violação de forro em tentativa de intrusão.", "tipo": "Tentativa de intrusão", "acao": "Identificação e tratativa realizadas de forma adequada."}, {"n": 4, "data": "2026-02-14", "data_raw": "14/02/2026", "mes": "Fevereiro", "pa": "721", "local": "Maceió", "ocorrencia": "Furto de cabos.", "tipo": "Furto de cabos", "acao": "Cadeado encontrado aberto; análise de imagens a ser aprimorada."}, {"n": 5, "data": "2026-02-14", "data_raw": "14/02/2026", "mes": "Fevereiro", "pa": "103", "local": "Rodoviária Velha", "ocorrencia": "Vandalismo com quebra de vidro.", "tipo": "Vandalismo", "acao": "Ocorrência registrada e encaminhada para as devidas tratativas."}, {"n": 6, "data": "2026-02-21", "data_raw": "21/02/2026", "mes": "Fevereiro", "pa": "413", "local": "Juazeiro", "ocorrencia": "Quebra de vidraça com a finalidade de intrusão.", "tipo": "Tentativa de intrusão", "acao": "Monitoramento das câmeras a ser complementado."}, {"n": 7, "data": "2026-02-23", "data_raw": "23/02/2026", "mes": "Fevereiro", "pa": "53", "local": "Ponte Nova", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Conferência da agência e verificação do status do alarme a serem reforçadas."}, {"n": 8, "data": "2026-02-28", "data_raw": "28/02/2026", "mes": "Fevereiro", "pa": "670", "local": "Rua Bicudo Leme", "ocorrencia": "Tentativa de intrusão.", "tipo": "Tentativa de intrusão", "acao": "Ocorrência registrada e encaminhada para as devidas tratativas."}, {"n": 9, "data": "2026-03-08", "data_raw": "08/03/2026", "mes": "Março", "pa": "23", "local": "Divinópolis", "ocorrencia": "Falha operacional decorrente de alarme desativado.", "tipo": "Dano / Falha operacional", "acao": "Conferência a ser realizada."}, {"n": 10, "data": "2026-03-13", "data_raw": "13/03/2026", "mes": "Março", "pa": "629", "local": "Rua Conceição", "ocorrencia": "Intrusão no hall, com danos estruturais.", "tipo": "Tentativa de intrusão", "acao": "Ocorrência registrada e encaminhada para as devidas tratativas."}, {"n": 11, "data": "2026-03-18", "data_raw": "18/03/2026", "mes": "Março", "pa": "345", "local": "Itu", "ocorrencia": "Dano em vidraça lateral.", "tipo": "Dano estrutural", "acao": "Evento captado pela ronda virtual."}, {"n": 12, "data": "2026-03-24", "data_raw": "24/03/2026", "mes": "Março", "pa": "721", "local": "Maceió", "ocorrencia": "Tentativa de intrusão.", "tipo": "Tentativa de intrusão", "acao": "Ocorrência registrada e encaminhada para as devidas tratativas."}, {"n": 13, "data": "2026-03-28", "data_raw": "28/03/2026", "mes": "Março", "pa": "359", "local": "Jardim Satélite", "ocorrencia": "Intrusão com obstrução das câmeras.", "tipo": "Tentativa de intrusão", "acao": "Ocorrência registrada e encaminhada para as devidas tratativas."}, {"n": 14, "data": null, "data_raw": "Não informada", "mes": "Março", "pa": "305", "local": "Itajubá", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Conferência e comunicação do acionamento do alarme a serem reforçadas."}, {"n": 15, "data": null, "data_raw": "Não informada", "mes": "Março", "pa": "374", "local": "Av. Presidente Wilson", "ocorrencia": "Danos em forro, com possível ação de animal.", "tipo": "Dano / Falha operacional", "acao": "Evento captado pela ronda virtual."}, {"n": 16, "data": "2026-03-29", "data_raw": "29/03/2026", "mes": "Março", "pa": "444", "local": "Rua Antônio Valle Melo", "ocorrencia": "Tentativa de dano à câmera.", "tipo": "Tentativa de intrusão", "acao": "Evento captado pela ronda virtual."}, {"n": 17, "data": "2026-04-02", "data_raw": "02/04/2026", "mes": "Abril", "pa": "385", "local": "Tupã", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Ocorrência não sinalizada pelo sistema (SIGMA)."}, {"n": 18, "data": "2026-04-06", "data_raw": "06/04/2026", "mes": "Abril", "pa": "776", "local": "Recife", "ocorrencia": "Tentativa de intrusão, com danificação do forro.", "tipo": "Tentativa de intrusão", "acao": "Validação das imagens a ser aprimorada (câmera Público 2)."}, {"n": 19, "data": "2026-04-10", "data_raw": "10/04/2026", "mes": "Abril", "pa": "645", "local": "Siqueira Campos", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Disparos não evidenciados pelo sistema; zona não sinalizada."}, {"n": 20, "data": "2026-04-13", "data_raw": "13/04/2026", "mes": "Abril", "pa": "648", "local": "Via Shopping", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Procedimentos operacionais executados corretamente."}, {"n": 21, "data": "2026-05-13", "data_raw": "13/05/2026", "mes": "Maio", "pa": "636", "local": "Rua Major Gote", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 22, "data": "2026-05-16", "data_raw": "16/05/2026", "mes": "Maio", "pa": "362", "local": "Sumaré", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 23, "data": "2026-05-16", "data_raw": "16/05/2026", "mes": "Maio", "pa": "36", "local": "Juiz de Fora", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 24, "data": "2026-05-17", "data_raw": "17/05/2026", "mes": "Maio", "pa": "219", "local": "Sorocaba", "ocorrencia": "Vandalismo, com quebra da porta de vidro da entrada.", "tipo": "Vandalismo", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 25, "data": "2026-05-20", "data_raw": "20/05/2026", "mes": "Maio", "pa": "352", "local": "Amparo", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 26, "data": "2026-05-21", "data_raw": "21/05/2026", "mes": "Maio", "pa": "722", "local": "Aracaju", "ocorrencia": "Desentendimento envolvendo cliente.", "tipo": "Desentendimento com cliente", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 27, "data": "2026-05-23", "data_raw": "23/05/2026", "mes": "Maio", "pa": "413", "local": "Juazeiro", "ocorrencia": "Vandalismo, com quebra de vidro no hall.", "tipo": "Vandalismo", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 28, "data": "2026-05-24", "data_raw": "24/05/2026", "mes": "Maio", "pa": "197", "local": "Guarulhos", "ocorrencia": "Furto de cabo.", "tipo": "Furto de cabos", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 29, "data": "2026-06-09", "data_raw": "09/06/2026", "mes": "Junho", "pa": "363", "local": "Bairro Industrial", "ocorrencia": "Furto de cabos.", "tipo": "Furto de cabos", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 30, "data": "2026-06-14", "data_raw": "14/06/2026", "mes": "Junho", "pa": "677", "local": "Dom Aquino", "ocorrencia": "Vandalismo e tentativa de intrusão.", "tipo": "Vandalismo / Tentativa de intrusão", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 31, "data": "2026-06-15", "data_raw": "15/06/2026", "mes": "Junho", "pa": "374", "local": "Presidente Wilson", "ocorrencia": "Desentendimento entre mãe e filha.", "tipo": "Desentendimento familiar", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 32, "data": "2026-06-18", "data_raw": "18/06/2026", "mes": "Junho", "pa": "4", "local": "Barreiro", "ocorrencia": "Furto de cabos.", "tipo": "Furto de cabos", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 33, "data": "2026-07-13", "data_raw": "13/07/2026", "mes": "Julho", "pa": "614", "local": "Av. Minas Gerais", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 34, "data": "2026-07-12", "data_raw": "12/07/2026", "mes": "Julho", "pa": "53", "local": "Ponte Nova", "ocorrencia": "Cliente retido no interior da agência.", "tipo": "Cliente retido", "acao": "Tratativas operacionais devidamente realizadas."}, {"n": 35, "data": "2026-07-10", "data_raw": "10/07/2026", "mes": "Julho", "pa": "312", "local": "Limeira", "ocorrencia": "Queda da placa lateral do ATM.", "tipo": "Dano estrutural", "acao": "Evento captado pela ronda virtual."}, {"n": 36, "data": "2026-07-10", "data_raw": "10/07/2026", "mes": "Julho", "pa": "362", "local": "Sumaré", "ocorrencia": "Queda da placa do forro.", "tipo": "Dano estrutural", "acao": "Evento captado pela ronda virtual."}];
+const KPIS = {"total": 36, "unidades_distintas": 30, "meses_cobertos": 6, "tipo_mais_frequente": "Cliente retido", "pct_com_data": 94.4};
+const AGREGADOS = {"volume_mes": [{"mes": "Fevereiro", "total": 8}, {"mes": "Março", "total": 8}, {"mes": "Abril", "total": 4}, {"mes": "Maio", "total": 8}, {"mes": "Junho", "total": 4}, {"mes": "Julho", "total": 4}], "top_tipos": [{"tipo": "Cliente retido", "total": 11}, {"tipo": "Tentativa de intrusão", "total": 9}, {"tipo": "Furto de cabos", "total": 4}, {"tipo": "Dano / Falha operacional", "total": 3}, {"tipo": "Vandalismo", "total": 3}, {"tipo": "Dano estrutural", "total": 3}, {"tipo": "Desentendimento com cliente", "total": 1}, {"tipo": "Vandalismo / Tentativa de intrusão", "total": 1}, {"tipo": "Desentendimento familiar", "total": 1}], "top_pas": [{"pa": "670 - Rua Bicudo Leme", "total": 2}, {"pa": "721 - Maceió", "total": 2}, {"pa": "413 - Juazeiro", "total": 2}, {"pa": "53 - Ponte Nova", "total": 2}, {"pa": "362 - Sumaré", "total": 2}]};
+
+function popularSelect(id, valores) {
+  const sel = document.getElementById(id);
+  valores.forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v; opt.textContent = v;
+    sel.appendChild(opt);
+  });
+}
+const mesesOrdem = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const mesesPresentes = [...new Set(REGISTROS.map(r=>r.mes))].sort((a,b)=>mesesOrdem.indexOf(a)-mesesOrdem.indexOf(b));
+const tiposPresentes = [...new Set(REGISTROS.map(r=>r.tipo))].sort();
+popularSelect('f-mes', mesesPresentes);
+popularSelect('f-tipo', tiposPresentes);
+
+document.getElementById('kpi-total').textContent = KPIS.total;
+document.getElementById('kpi-unidades').textContent = KPIS.unidades_distintas;
+document.getElementById('kpi-meses').textContent = KPIS.meses_cobertos;
+document.getElementById('kpi-tipo').textContent = KPIS.tipo_mais_frequente;
+document.getElementById('kpi-pctdata').textContent = KPIS.pct_com_data + '%';
+
+let filtros = { mes:'', tipo:'', busca:'' };
+let ordenacao = { col:'n', dir:'asc' };
+
+function aplicarFiltros() {
+  return REGISTROS.filter(r => {
+    if (filtros.mes && r.mes !== filtros.mes) return false;
+    if (filtros.tipo && r.tipo !== filtros.tipo) return false;
+    if (filtros.busca) {
+      const b = filtros.busca.toLowerCase();
+      if (!r.pa.toLowerCase().includes(b) && !r.local.toLowerCase().includes(b) &&
+          !r.ocorrencia.toLowerCase().includes(b) && !r.tipo.toLowerCase().includes(b)) return false;
+    }
+    return true;
+  });
+}
+
+function ordenar(lista) {
+  const { col, dir } = ordenacao;
+  const mult = dir === 'asc' ? 1 : -1;
+  return lista.slice().sort((a,b) => {
+    let va = a[col], vb = b[col];
+    if (col === 'data') { va = a.data || '0000'; vb = b.data || '0000'; }
+    if (typeof va === 'string') return va.localeCompare(vb) * mult;
+    return (va - vb) * mult;
+  });
+}
+
+function renderizar() {
+  const filtrados = ordenar(aplicarFiltros());
+  document.getElementById('count-mostrando').textContent = filtrados.length;
+  document.getElementById('count-total').textContent = REGISTROS.length;
+
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = filtrados.map(r => `
+    <tr>
+      <td>${r.n}</td>
+      <td>${r.data_raw}</td>
+      <td>${r.mes}</td>
+      <td>${r.pa}</td>
+      <td>${r.local}</td>
+      <td>${r.ocorrencia}</td>
+      <td><span class="tipo-pill">${r.tipo}</span></td>
+      <td>${r.acao}</td>
+    </tr>
+  `).join('');
+
+  renderizarFiltrosAtivos();
+}
+
+function renderizarFiltrosAtivos() {
+  const div = document.getElementById('filtros-ativos');
+  const chips = [];
+  if (filtros.mes) chips.push(['Mês: '+filtros.mes, () => { filtros.mes=''; document.getElementById('f-mes').value=''; }]);
+  if (filtros.tipo) chips.push(['Tipo: '+filtros.tipo, () => { filtros.tipo=''; document.getElementById('f-tipo').value=''; }]);
+  if (filtros.busca) chips.push(['Busca: '+filtros.busca, () => { filtros.busca=''; document.getElementById('f-busca').value=''; }]);
+  div.innerHTML = chips.map((c,i) => `<span class="active-filter" onclick="removerFiltro(${i})">${c[0]} ✕</span>`).join('');
+  window.__chipHandlers = chips.map(c => c[1]);
+}
+function removerFiltro(i) { window.__chipHandlers[i](); renderizar(); }
+
+function limparFiltros() {
+  filtros = { mes:'', tipo:'', busca:'' };
+  ['f-mes','f-tipo','f-busca'].forEach(id => document.getElementById(id).value = '');
+  renderizar();
+}
+
+['f-mes','f-tipo'].forEach(id => {
+  document.getElementById(id).addEventListener('change', e => {
+    const chave = id.replace('f-','');
+    filtros[chave] = e.target.value;
+    renderizar();
+  });
+});
+document.getElementById('f-busca').addEventListener('input', e => { filtros.busca = e.target.value; renderizar(); });
+
+document.querySelectorAll('thead th').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (ordenacao.col === col) ordenacao.dir = ordenacao.dir === 'asc' ? 'desc' : 'asc';
+    else { ordenacao.col = col; ordenacao.dir = 'asc'; }
+    renderizar();
+  });
+});
+
+function exportarCSV() {
+  const filtrados = ordenar(aplicarFiltros());
+  const cabecalho = ['Nº','Data','Mês','PA','Local','Ocorrência','Tipo','Observação / Ação'];
+  const linhas = filtrados.map(r => [r.n, r.data_raw, r.mes, r.pa, r.local, r.ocorrencia, r.tipo, r.acao]);
+  const csv = [cabecalho, ...linhas].map(l => l.map(v => `"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob(['\ufeff' + csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `ocorrencias_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+Chart.defaults.color = '#7a8ba8';
+Chart.defaults.font.family = 'Inter, sans-serif';
+
+const chartMes = new Chart(document.getElementById('chart-mes'), {
+  type: 'bar',
+  data: {
+    labels: AGREGADOS.volume_mes.map(v => v.mes),
+    datasets: [{ data: AGREGADOS.volume_mes.map(v => v.total), backgroundColor: '#3498db' }]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend: { display:false } },
+    scales: { x: { grid:{display:false} }, y: { grid:{color:'#1e2d4a'}, ticks:{stepSize:1} } },
+    onClick: (evt, elems) => {
+      if (!elems.length) return;
+      const idx = elems[0].index;
+      const mes = AGREGADOS.volume_mes[idx].mes;
+      filtros.mes = mes; document.getElementById('f-mes').value = mes;
+      renderizar();
+    }
+  }
+});
+
+const chartTipo = new Chart(document.getElementById('chart-tipo'), {
+  type: 'bar',
+  data: {
+    labels: AGREGADOS.top_tipos.map(t => t.tipo.length > 26 ? t.tipo.slice(0,26)+'…' : t.tipo),
+    datasets: [{ data: AGREGADOS.top_tipos.map(t => t.total), backgroundColor: '#16c79a' }]
+  },
+  options: {
+    indexAxis: 'y', responsive:true, maintainAspectRatio:false,
+    plugins: { legend: { display:false } },
+    scales: { x: { grid:{color:'#1e2d4a'}, ticks:{stepSize:1} }, y: { grid:{display:false}, ticks:{font:{size:10}} } },
+    onClick: (evt, elems) => {
+      if (!elems.length) return;
+      const idx = elems[0].index;
+      const tipo = AGREGADOS.top_tipos[idx].tipo;
+      filtros.tipo = tipo; document.getElementById('f-tipo').value = tipo;
+      renderizar();
+    }
+  }
+});
+
+renderizar();
+</script>
+</body>
+</html>
