@@ -143,6 +143,29 @@ def hhmmss_to_min(s):
     return round(h * 60 + mi + se / 60, 1)
 
 
+def categorizar_motivo(descricao_raw):
+    """Padroniza a categoria de motivo:
+    - 'Sistema' (evento administrativo generico) vira 'Disparo de Alarme'
+    - Variacoes de falha de energia (QUADRO DE ENERGIA, QUEDA DE ENERGIA, etc.)
+      sao consolidadas em 'FALHA DE ENERGIA ELETRICA (FAC)'
+    - Variacoes de problema de rede/ethernet viram 'FALHA DE ETHERNET (FTH)'
+    Isso evita que o mesmo tipo de falha fique espalhado em varias categorias
+    quase-identicas e garante destaque visual pros dois tipos que o cliente
+    quer acompanhar de perto (energia e ethernet).
+    """
+    d = (descricao_raw or "").strip()
+    if not d:
+        return "N/D"
+    d_upper = d.upper()
+    if d_upper == "SISTEMA":
+        return "Disparo de Alarme"
+    if "ETHERNET" in d_upper:
+        return "FALHA DE ETHERNET (FTH)"
+    if "ENERGIA" in d_upper:
+        return "FALHA DE ENERGIA ELÉTRICA (FAC)"
+    return d
+
+
 def processar_linhas(linhas):
     registros = []
     for row in linhas[1:]:  # pula cabecalho
@@ -167,7 +190,7 @@ def processar_linhas(linhas):
             "cidade": cidade,
             "unidade_codigo": codigo,
             "unidade_raw": conta.strip(),
-            "motivo": (d["Descricao"] or "N/D").strip() or "N/D",
+            "motivo": categorizar_motivo(d["Descricao"]),
             "status": (d["Status"] or "N/D").strip() or "N/D",
             "tempo_total_min": tempo_total_min,
             "tempo_atend_min": tempo_atend_min,
@@ -265,11 +288,19 @@ def montar_kpis_e_agregados(registros):
         cont_cidade[r["cidade"]] = cont_cidade.get(r["cidade"], 0) + 1
     top_cidades = [{"cidade": c, "total": t} for c, t in sorted(cont_cidade.items(), key=lambda x: -x[1])[:10]]
 
-    # top motivos
+    # top motivos - top 15 por contagem, mas garantindo que Falha de Energia (FAC)
+    # e Falha de Ethernet (FTH) sempre apareçam, mesmo que nao entrem no top 15
+    # natural, ja que o cliente quer visibilidade garantida pra esses dois tipos
     cont_motivo = {}
     for r in registros:
         cont_motivo[r["motivo"]] = cont_motivo.get(r["motivo"], 0) + 1
-    top_motivos = [{"motivo": m, "total": t} for m, t in sorted(cont_motivo.items(), key=lambda x: -x[1])[:15]]
+    ranking_completo = sorted(cont_motivo.items(), key=lambda x: -x[1])
+    top_motivos_lista = ranking_completo[:15]
+    labels_no_top = {m for m, _ in top_motivos_lista}
+    for label_fixo in ("FALHA DE ENERGIA ELÉTRICA (FAC)", "FALHA DE ETHERNET (FTH)"):
+        if label_fixo not in labels_no_top and label_fixo in cont_motivo:
+            top_motivos_lista.append((label_fixo, cont_motivo[label_fixo]))
+    top_motivos = [{"motivo": m, "total": t} for m, t in top_motivos_lista]
 
     # status
     cont_status = {}
@@ -277,11 +308,20 @@ def montar_kpis_e_agregados(registros):
         cont_status[r["status"]] = cont_status.get(r["status"], 0) + 1
     status_dist = [{"status": s, "total": t} for s, t in sorted(cont_status.items(), key=lambda x: -x[1])]
 
+    # disparos por horario do dia (0-23h) - mostra se ha concentracao na
+    # abertura/fechamento das unidades
+    cont_hora = {h: 0 for h in range(24)}
+    for r in registros:
+        if r["dt_inicio"]:
+            cont_hora[r["dt_inicio"].hour] += 1
+    por_hora = [{"hora": f"{h:02d}h", "total": cont_hora[h]} for h in range(24)]
+
     agregados = {
         "volume_mes": volume_mes_ordenado,
         "top_cidades": top_cidades,
         "top_motivos": top_motivos,
         "status_dist": status_dist,
+        "por_hora": por_hora,
     }
     return kpis, agregados
 
@@ -400,7 +440,14 @@ TEMPLATE = r"""<!DOCTYPE html>
     <div class="chart-card">
       <h3>Top 15 Motivos</h3>
       <div class="chart-wrap"><canvas id="chart-motivos"></canvas></div>
-      <div class="hint">Clique numa barra para filtrar por motivo</div>
+      <div class="hint">Clique numa barra para filtrar por motivo · laranja = Falha de Energia (FAC) · ciano = Falha de Ethernet (FTH)</div>
+    </div>
+  </div>
+  <div class="charts" style="grid-template-columns:1fr;">
+    <div class="chart-card">
+      <h3>Disparos por Horário do Dia</h3>
+      <div class="chart-wrap"><canvas id="chart-hora"></canvas></div>
+      <div class="hint">Clique numa barra para filtrar por horário · picos aqui costumam coincidir com abertura/fechamento das unidades</div>
     </div>
   </div>
 
@@ -470,7 +517,7 @@ document.getElementById('kpi-tempo-atend').textContent = KPIS.tempo_atend_median
 document.getElementById('kpi-tempo-total').textContent = KPIS.tempo_total_mediano != null ? KPIS.tempo_total_mediano + ' min' : '-';
 
 // ---- estado de filtros ----
-let filtros = { cliente:'', uf:'', cidade:'', status:'', dataDe:'', dataAte:'', busca:'', motivoDrill:'' };
+let filtros = { cliente:'', uf:'', cidade:'', status:'', dataDe:'', dataAte:'', busca:'', motivoDrill:'', horaDrill:null };
 let paginaAtual = 1;
 const PAGE_SIZE = 30;
 let ordenacao = { col:'dt', dir:'desc' };
@@ -482,6 +529,7 @@ function aplicarFiltros() {
     if (filtros.cidade && r.cidade !== filtros.cidade) return false;
     if (filtros.status && r.status !== filtros.status) return false;
     if (filtros.motivoDrill && r.motivo !== filtros.motivoDrill) return false;
+    if (filtros.horaDrill !== null && (!r.dt || r.dt.getHours() !== filtros.horaDrill)) return false;
     if (filtros.dataDe && (!r.dt || r.dt < new Date(filtros.dataDe))) return false;
     if (filtros.dataAte && (!r.dt || r.dt > new Date(filtros.dataAte + 'T23:59:59'))) return false;
     if (filtros.busca) {
@@ -570,6 +618,7 @@ function renderizarFiltrosAtivos() {
   if (filtros.cidade) chips.push(['Cidade: '+filtros.cidade, () => { filtros.cidade=''; document.getElementById('f-cidade').value=''; }]);
   if (filtros.status) chips.push(['Status: '+filtros.status, () => { filtros.status=''; document.getElementById('f-status').value=''; }]);
   if (filtros.motivoDrill) chips.push(['Motivo: '+filtros.motivoDrill, () => { filtros.motivoDrill=''; }]);
+  if (filtros.horaDrill !== null) chips.push(['Horário: '+String(filtros.horaDrill).padStart(2,'0')+'h', () => { filtros.horaDrill=null; }]);
   if (filtros.dataDe) chips.push(['De: '+filtros.dataDe, () => { filtros.dataDe=''; document.getElementById('f-data-de').value=''; }]);
   if (filtros.dataAte) chips.push(['Até: '+filtros.dataAte, () => { filtros.dataAte=''; document.getElementById('f-data-ate').value=''; }]);
   if (filtros.busca) chips.push(['Busca: '+filtros.busca, () => { filtros.busca=''; document.getElementById('f-busca').value=''; }]);
@@ -579,7 +628,7 @@ function renderizarFiltrosAtivos() {
 function removerFiltro(i) { window.__chipHandlers[i](); paginaAtual = 1; renderizar(); }
 
 function limparFiltros() {
-  filtros = { cliente:'', uf:'', cidade:'', status:'', dataDe:'', dataAte:'', busca:'', motivoDrill:'' };
+  filtros = { cliente:'', uf:'', cidade:'', status:'', dataDe:'', dataAte:'', busca:'', motivoDrill:'', horaDrill:null };
   ['f-cliente','f-uf','f-cidade','f-status','f-data-de','f-data-ate','f-busca'].forEach(id => document.getElementById(id).value = '');
   paginaAtual = 1;
   renderizar();
@@ -681,7 +730,14 @@ const chartMotivos = new Chart(document.getElementById('chart-motivos'), {
   type: 'bar',
   data: {
     labels: AGREGADOS.top_motivos.map(m => m.motivo.length > 28 ? m.motivo.slice(0,28)+'…' : m.motivo),
-    datasets: [{ data: AGREGADOS.top_motivos.map(m => m.total), backgroundColor: '#9b59b6' }]
+    datasets: [{
+      data: AGREGADOS.top_motivos.map(m => m.total),
+      backgroundColor: AGREGADOS.top_motivos.map(m => {
+        if (m.motivo.includes('FAC')) return '#e67e22';   // falha de energia - laranja
+        if (m.motivo.includes('FTH')) return '#00bcd4';   // falha de ethernet - ciano
+        return '#9b59b6';
+      })
+    }]
   },
   options: {
     indexAxis: 'y', responsive:true, maintainAspectRatio:false,
@@ -692,6 +748,25 @@ const chartMotivos = new Chart(document.getElementById('chart-motivos'), {
       const idx = elems[0].index;
       const motivo = AGREGADOS.top_motivos[idx].motivo;
       filtros.motivoDrill = motivo;
+      paginaAtual = 1; renderizar();
+    }
+  }
+});
+
+const chartHora = new Chart(document.getElementById('chart-hora'), {
+  type: 'bar',
+  data: {
+    labels: AGREGADOS.por_hora.map(h => h.hora),
+    datasets: [{ data: AGREGADOS.por_hora.map(h => h.total), backgroundColor: '#16c79a', borderRadius: 4 }]
+  },
+  options: {
+    responsive:true, maintainAspectRatio:false,
+    plugins: { legend: { display:false } },
+    scales: { x: { grid:{display:false} }, y: { grid:{color:'#1e2d4a'} } },
+    onClick: (evt, elems) => {
+      if (!elems.length) return;
+      const idx = elems[0].index;
+      filtros.horaDrill = idx; // 0-23
       paginaAtual = 1; renderizar();
     }
   }
