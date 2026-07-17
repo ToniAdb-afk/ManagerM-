@@ -192,10 +192,13 @@ def montar_kpis_e_agregados(registros):
         cont_tipo[t] = cont_tipo.get(t, 0) + 1
     tipo_ordenado = sorted(cont_tipo.items(), key=lambda x: -x[1])
 
-    # motivo (top 8)
+    # motivo (na verdade, categorizado pela coluna Descrição - e o agrupamento
+    # que reflete corretamente o tipo de ocorrencia, ex.: CFTV INOPERANTE,
+    # QUEDA DE ENERGIA, etc. A coluna 'Motivo' e um detalhamento mais fino
+    # e fica disponivel na tabela/busca, mas o grafico usa Descrição.)
     cont_motivo = {}
     for r in registros:
-        m = r["motivo"] or "N/D"
+        m = r["descricao"] or "N/D"
         cont_motivo[m] = cont_motivo.get(m, 0) + 1
     top_motivo = sorted(cont_motivo.items(), key=lambda x: -x[1])[:8]
 
